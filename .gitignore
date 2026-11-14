@@ -1,0 +1,6 @@
+bin/
+*.pcap
+*.pcap.*
+*.o
+*.d
+core
