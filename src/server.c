@@ -371,10 +371,12 @@ int ps_server_run(const struct ps_server_opts *opts) {
     }
 
     /* The stream itself runs over TCP on the same box and would be captured,
-     * which turns a quiet link into a feedback loop. Exclude it by default. */
+     * which turns a quiet link into a feedback loop. Exclude it by default -
+     * but only when we can compile a BPF program at all. */
     char filter[320];
 
     filter[0] = '\0';
+#ifdef PS_HAVE_PCAP
     if (!opts->capture_control) {
         if (opts->bpf && *opts->bpf) {
             snprintf(filter, sizeof(filter), "(%s) and not tcp port %u", opts->bpf,
@@ -385,6 +387,13 @@ int ps_server_run(const struct ps_server_opts *opts) {
     } else if (opts->bpf && *opts->bpf) {
         ps_strlcpy(filter, opts->bpf, sizeof(filter));
     }
+#else
+    if (opts->bpf && *opts->bpf) {
+        ps_strlcpy(filter, opts->bpf, sizeof(filter)); /* fails below with a clear message */
+    } else if (!opts->capture_control) {
+        LOG_DEBUG("no libpcap in this build: the stream's own connection will be captured");
+    }
+#endif
     const char *bpf = filter[0] ? filter : NULL;
 
     if (ps_capture_open(&s.cap, opts->iface, opts->snaplen, opts->promisc, dir, bpf, err,
