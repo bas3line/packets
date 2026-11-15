@@ -1,196 +1,210 @@
-# pktsniff
+<div align="center">
 
-Capture packets on a server, watch them live on your laptop, and keep a
-`.pcap` you can open in Wireshark.
+<a href="https://ascii.rest/banner/pktsniff.svg?color=34d399,60a5fa&tagline=packets%20live%20from%20any%20server">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://ascii.rest/banner/pktsniff.dark.svg?color=34d399,60a5fa&tagline=packets%20live%20from%20any%20server">
+    <img alt="pktsniff: packets live from any server" src="https://ascii.rest/banner/pktsniff.svg?color=34d399,60a5fa&tagline=packets%20live%20from%20any%20server">
+  </picture>
+</a>
 
-A real packet sniffer, not a demo: raw `AF_PACKET` capture with kernel BPF
-filters, a framed binary wire protocol, a bounds-checked dissector, per-client
-back pressure that never desynchronises the stream, and `.pcap` output on both
-ends.
+<br>
+<br>
+
+Capture packets on a server, watch them on your laptop, keep the `.pcap`.<br>
+Raw sockets, kernel BPF filters, and a stream that never sends you half a frame.
+
+[install](#install) · [run it](#run-it) · [server](#server) · [client](#client) · [filters](#display-filters) · [recipes](#recipes) · [how it's built](#how-its-built) · [contributing](CONTRIBUTING.md)
+
+[![by @bas3line](https://img.shields.io/badge/by-%40bas3line-181717?logo=github&logoColor=white)](https://github.com/bas3line)
+[![CI](https://github.com/bas3line/packets/actions/workflows/ci.yml/badge.svg)](https://github.com/bas3line/packets/actions/workflows/ci.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-181717)](LICENSE)
+[![C11](https://img.shields.io/badge/C-11-181717?logo=c&logoColor=white)](Makefile)
+[![Linux](https://img.shields.io/badge/Linux-AF__PACKET-181717?logo=linux&logoColor=white)](src/capture.c)
+[![libpcap](https://img.shields.io/badge/libpcap-optional-181717)](Makefile)
+
+</div>
+
+<br>
+
+Written in C by [@bas3line](https://github.com/bas3line). Two programs: one captures on the machine you can't sit in front of, the other sits in front of you. The server hands out raw link-layer frames with their kernel timestamps over a length-prefixed binary stream; the client decodes them, filters them, prints them, and can write them straight into a `.pcap` that Wireshark opens. Nothing is lost in translation, and nothing gets lost when your laptop reads slower than the wire.
 
 ```
 $ sudo pktsniff-server -i eth0 -f 'tcp port 443 or udp port 53' -w /var/cap/eth0.pcap
-06:51:00 [inf] pktsniff 2.0.0 capturing on eth0 (snap 262144, promisc on, filter "(tcp port 443 or udp port 53) and not tcp port 8888")
-06:51:00 [inf] streaming on port 8888 (max 8 clients)
-06:51:00 [inf] recording to /var/cap/eth0.pcap
-06:51:05 [inf] seen=48211 tcp=41992 udp=6123 icmp=6 other=90 bytes=58.4 MB clients=1 drops=0
-```
+11:02:14 [inf] pktsniff 2.0.0 capturing on eth0 (snap 262144, promisc on, filter "(tcp port 443 or udp port 53) and not tcp port 8888")
+11:02:14 [inf] streaming on port 8888 (max 8 clients)
+11:02:14 [inf] recording to /var/cap/eth0.pcap
+11:02:19 [inf] seen=48211 tcp=41992 udp=6123 icmp=6 other=90 bytes=58.4 MB clients=1 drops=0
 
-```
 $ pktsniff-client 203.0.113.10 -F 'proto:tls or proto:dns'
-Connected to box.example (iface eth0, linktype 1, snap 262144, filter "…")
-06:51:07.112321 #000001 TCP   10.0.0.5:53112 -> 1.1.1.1:443      74 B ttl=64 SYN seq=…  | TLS SNI=cloudflare.com
-06:51:07.112947 #000002 DNS   10.0.0.5:40233 -> 1.1.1.1:53     71 B ttl=64 | DNS A example.com
-06:51:07.113402 #000003 TCP   1.1.1.1:443 -> 10.0.0.5:53112  1460 B ttl=57 ACK,PSH | TLS handshake
+11:02:21.112321 #000001 TCP   10.0.0.5:53112 -> 1.1.1.1:443      74 B ttl=64 SYN | TLS SNI=cloudflare.com
+11:02:21.112947 #000002 DNS   10.0.0.5:40233 -> 1.1.1.1:53     71 B ttl=64 | DNS A example.com
+11:02:21.113402 #000003 TCP   1.1.1.1:443 -> 10.0.0.5:53112  1460 B ttl=57 ACK,PSH | TLS handshake
 ```
 
-## Why it is useful
+## Why
 
-- **It outputs things you can act on.** `.pcap` on both sides, newline-delimited
-  JSON for `jq`, one-line-per-packet text for `grep`.
-- **It never sends you garbage.** The stream is length-prefixed binary frames.
-  A slow reader gets whole frames dropped, never a half frame, so the client
-  can't fall out of sync.
-- **It filters twice.** Real tcpdump syntax in the kernel (`--filter`, needs
-  libpcap) and a cheap structured filter in the client (`-F`).
-- **It explains what it sees.** DNS query names, TLS SNI, HTTP request lines,
-  TCP flags, ARP who-has, VLAN tags, IPv4/IPv6, ICMP.
-
-## Build
-
-```bash
-make                 # bin/pktsniff-server, bin/pktsniff-client
-make test            # unit tests, no root needed
-sudo tests/e2e.sh    # live tests on loopback (needs root + python3 + tcpdump)
-```
-
-Requirements: a C11 compiler and Linux headers. `libpcap-dev` is optional and
-only enables server-side `--filter` (`make print-config` says whether it is on).
+Every "remote sniffer" I'd used printed packet lines to a terminal and threw them away. The lines you actually wanted were the ones scrolled past, the hexdump was truncated into unreadable mush, and there was no way to hand a colleague the traffic afterwards. So: real capture, real filters, and a format that survives the trip. The stream is framed, so a slow reader loses whole packets and never the alignment; the output is either a text line you can grep, JSON you can pipe into `jq`, or a `.pcap` you can open in Wireshark. The server stays deliberately stupid — it captures, timestamps, and forwards bytes — because the interesting decisions belong where a person is looking.
 
 ## Install
 
-```bash
-sudo apt install build-essential libpcap-dev   # Debian/Ubuntu
-make && sudo make install                      # -> /usr/local/bin
+```sh
+git clone https://github.com/bas3line/packets
+cd packets
+make -j"$(nproc)"
+sudo make install                    # /usr/local/bin/pktsniff-{server,client}
+```
+
+A C11 compiler and Linux headers. `libpcap-dev` is optional and only enables the server's `--filter`; `make print-config` tells you whether it was found. To run the server without full root:
+
+```sh
 sudo setcap cap_net_raw,cap_net_admin=eip /usr/local/bin/pktsniff-server
 ```
 
-With those capabilities the server runs without full root. There is also a
-systemd unit in `packaging/pktsniff.service`.
+## Run it
+
+```sh
+# on the box
+sudo pktsniff-server -i eth0
+
+# on your machine
+pktsniff-client 203.0.113.10
+```
+
+Open TCP 8888 (or `-p` whatever you like) between them. Only that port; the client needs no privileges and no libpcap.
+
+| script | |
+| --- | --- |
+| `make` | build both binaries into `bin/` |
+| `make test` | unit tests: framing, dissection, filters, the send queue |
+| `sudo tests/e2e.sh` | live checks on loopback: capture, drops, `.pcap`, JSON, limits |
+| `make asan` | rebuild and rerun the unit tests under ASan + UBSan |
+| `make install` | install to `$(PREFIX)/bin` |
+| `sudo make install-service` | install the systemd unit in `packaging/` |
 
 ## Server
 
-```
-pktsniff-server [options]
-
-  -i, --iface NAME          interface to capture on (default: any)
-  -f, --filter BPF          kernel filter in tcpdump syntax (needs libpcap)
-  -s, --snaplen N           bytes kept per packet (default 262144)
-      --no-promisc          do not enable promiscuous mode
-      --direction in|out|both   drop our own sent / received traffic
-      --capture-control     also capture the stream's own TCP connection
-  -p, --port N              TCP port to listen on (default 8888)
-  -b, --bind ADDR           bind address (default 0.0.0.0)
-  -m, --max-clients N       concurrent clients (default 8)
-      --client-buffer BYTES per-client queue before dropping (default 4 MiB)
-  -w, --pcap FILE           also record to a .pcap file
-      --pcap-rotate-mb N    rotate the file every N MiB
-  -t, --stats-interval N    seconds between status lines (default 5)
-  -v, --verbose             debug logging
-  -q, --quiet               no periodic status lines
-      --list-interfaces     list interfaces and exit
+```sh
+sudo pktsniff-server -i eth0 -f 'tcp port 443' -w cap.pcap --pcap-rotate-mb 100
 ```
 
-The server excludes its own control connection from the capture by default
-(`not tcp port <port>`); without that, capturing `lo` turns the stream into a
-feedback loop. Use `--capture-control` if you really want it.
+| flag | |
+| --- | --- |
+| `-i, --iface NAME` | interface to capture on, default `any` (all of them at once) |
+| `-f, --filter BPF` | kernel filter in tcpdump syntax; compiled by libpcap and attached with `SO_ATTACH_FILTER` |
+| `-s, --snaplen N` | bytes kept per packet, default 262144 |
+| `--no-promisc` | leave the interface out of promiscuous mode |
+| `--direction in\|out\|both` | drop traffic this host sent, received, or neither |
+| `--capture-control` | also capture the stream's own TCP connection |
+| `-p, --port N` | TCP port to serve on, default 8888 |
+| `-b, --bind ADDR` | bind address, default `0.0.0.0` |
+| `-m, --max-clients N` | concurrent clients, default 8 |
+| `--client-buffer BYTES` | queue per slow client before dropping, default 4 MiB |
+| `-w, --pcap FILE` | record to a `.pcap` as well |
+| `--pcap-rotate-mb N` | start a new file every N MiB |
+| `-t, --stats-interval N` | seconds between status lines, default 5 |
+| `-q, -v` | no status lines, or debug logging |
+
+The server excludes its own control connection from the capture (`not tcp port <port>`) unless you ask for `--capture-control`: capturing `lo` while streaming over it is otherwise a loop that feeds itself.
 
 ## Client
 
-```
-pktsniff-client [host] [options]
-
-  -H, --host HOST           server address (default 127.0.0.1)
-  -p, --port N              server port (default 8888)
-      --reconnect           retry forever instead of exiting on disconnect
-
-  -F, --filter EXPR         display filter, see below
-  -c, --count N             stop after N matching packets
-  -d, --duration N          stop after N seconds
-
-  -x, --hex N               hexdump the first N bytes of each match
-  -X, --no-hex              no hexdump
-      --json FILE           newline-delimited JSON ('-' = stdout)
-      --no-stats            hide the periodic counter line
-      --stats-interval N    seconds between counter lines (default 5)
-  -C, --color / --no-color  force or disable ANSI colour (default: tty only)
-  -q, --quiet               no banner or summary
-  -w, --pcap FILE           write matching packets to a .pcap
-      --pcap-rotate-mb N    rotate the file every N MiB
+```sh
+pktsniff-client 203.0.113.10 -F 'proto:dns' -d 30 -x 64
 ```
 
-### Display filters
+| flag | |
+| --- | --- |
+| `[host]`, `-H, --host` | server address, default `127.0.0.1` |
+| `-p, --port N` | server port, default 8888 |
+| `-F, --filter EXPR` | display filter, see [filters](#display-filters) |
+| `-c, --count N` | stop after exactly N matching packets |
+| `-d, --duration N` | stop after N seconds |
+| `-x, --hex N` | hexdump the first N bytes of each match |
+| `--json FILE` | newline-delimited JSON, `-` for stdout |
+| `-w, --pcap FILE` | write matching packets to a `.pcap` |
+| `--pcap-rotate-mb N` | rotate that file every N MiB |
+| `--stats-interval N`, `--no-stats` | the counter line, every 5 s by default |
+| `-C, --color`, `--no-color` | force or disable colour (default: only on a tty) |
+| `--reconnect` | survive a server restart instead of exiting |
+| `-q, -v` | no banner or summary, or debug logging |
 
-Groups are joined by `or` (`|` also works); terms inside a group are AND'ed;
-`!` negates a term.
+## Display filters
+
+Terms are AND'ed, groups are joined with `or` (or `|`), and `!` negates a term. Single terms have shorthands.
 
 ```
-proto:tcp proto:udp proto:icmp proto:icmp6 proto:arp proto:ip6
-proto:dns proto:tls proto:http
-port:443   sport:53   dport:53
-host:10.0.0.1   host:10.0.0.0/8   src:…   dst:…
-contains:GET   bytes:>500
+proto:tcp   proto:udp   proto:icmp   proto:icmp6   proto:arp   proto:ip6
+proto:dns   proto:tls   proto:http
+port:443    sport:53    dport:53
+host:10.0.0.1    host:10.0.0.0/8    src:…    dst:…
+contains:GET     bytes:>1400
 ```
 
-Shorthand for single terms: `tcp`, `udp`, `icmp`, `arp`, `dns`, `tls`, `http`,
-`443` (port), `10.0.0.1` (host).
-
-```bash
+```sh
 pktsniff-client 203.0.113.10 -F 'proto:tls or proto:dns'
 pktsniff-client 203.0.113.10 -F 'host:10.0.0.0/8 !tcp'
 pktsniff-client 203.0.113.10 -F 'bytes:>1400' -x 32
-pktsniff-client 203.0.113.10 --json - | jq -r '.app' | sort | uniq -c | sort -rn | head
 ```
 
-### Recipes
+`-F` is a display filter and runs on your machine. `--filter` on the server is tcpdump syntax and runs in the kernel. Different tools, different grammar, and the second one is the one that saves bandwidth.
 
-```bash
-# Watch DNS from a busy server without drowning the terminal
+## Recipes
+
+```sh
+# Watch DNS on a busy box without drowning the terminal
 sudo pktsniff-server -i eth0 -f 'udp port 53' &
 pktsniff-client -F 'proto:dns' -d 30
 
-# Export just the HTTP traffic to a shareable capture
+# Export the HTTP traffic from the last minute as a shareable capture
 pktsniff-client 203.0.113.10 -F 'proto:http or port:443' -w subset.pcap -d 60
 
-# Rotate 100 MiB recordings for a day
+# A day of rotating recordings on the server, nothing sent to anyone
 sudo pktsniff-server -i eth0 -w /var/cap/eth0.pcap --pcap-rotate-mb 100
 
 # Which hosts is this box talking TLS to?
 pktsniff-client 203.0.113.10 --json - | jq -r 'select(.app|startswith("TLS SNI"))|.app'
+
+# Everything on one port, as JSON, to a file, with no privileges at all
+pktsniff-client 203.0.113.10 -F 'port:5432' --json pg.ndjson -d 120
 ```
 
-## How it fits together
+## What it can see
+
+Ethernet II, 802.1Q and QinQ VLAN stacks, Linux cooked capture, BSD loopback, bare IP; ARP, IPv4 with options and fragmentation, IPv6 with extension headers; TCP with flags, sequence numbers, window and MSS, UDP, ICMP and ICMPv6; and enough application awareness to answer "who is this talking to": DNS question names and record types, TLS ClientHello SNI, HTTP request lines.
+
+No stream reassembly and no full protocol zoo — just the part that tells you what is going on.
+
+## How it's built
 
 ```
-  ┌─────────────┐   AF_PACKET/BFF   ┌──────────────┐   framed TCP    ┌──────────────┐
-  │    NIC      │ ────────────────► │ pktsniff-    │ ──────────────► │ pktsniff-    │
-  └─────────────┘                   │ server       │  HELLO/PACKET   │ client       │
-                                    │  capture →   │  /STATS/BYE     │  decode →    │
-                                    │  queue/clt   │                 │  filter →    │
-                                    │  write pcap  │                 │  render/pcap │
-                                    └──────────────┘                 └──────────────┘
+  ┌────────┐  AF_PACKET   ┌─────────────────┐  framed TCP     ┌─────────────────┐
+  │  NIC   │ ───────────► │ pktsniff-server │ ──────────────► │ pktsniff-client │
+  └────────┘  kernel BPF  │ capture → queue │ HELLO PACKET    │ decode → filter │
+                          │ → pcap on disk  │ STATS BYE ERR   │ → render / pcap │
+                          └─────────────────┘                 └─────────────────┘
 ```
 
-The server deliberately understands almost nothing about packets: it hands the
-client raw link-layer frames plus a timestamp, so the client can do the
-interesting work (and write a valid `.pcap`). Details:
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-[`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+- **The stream is frames, not lines.** 12-byte header with magic, version, type and length, then the payload. The client buffers until a frame is whole, so a packet split across TCP segments cannot break it. Layout in [docs/PROTOCOL.md](docs/PROTOCOL.md).
+- **Back pressure never desynchronises.** Each client has a bounded queue of whole frames. When it fills, only frames with no bytes on the wire yet are dropped — dropping a partly-sent frame is exactly how a client ends up reading garbage. That queue has its own test suite.
+- **Kernel timestamps, kernel filters.** `SO_TIMESTAMPNS` for arrival times, `SO_ATTACH_FILTER` for libpcap-compiled BPF, `PACKET_STATISTICS` for the drop count you can see in the status line.
+- **One epoll loop, nothing blocks.** Capture socket, listen socket and every client share it, so one slow reader cannot stall the capture.
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the module map and the reasoning, [docs/SETUP.md](docs/SETUP.md) for firewall, capabilities, systemd and troubleshooting.
 
 ## Repo layout
 
-```
-include/        headers, one per module
-src/            server, client, capture, dissector, protocol, queue, pcap, util
-tests/          unit tests (make test) + live e2e (sudo tests/e2e.sh)
-docs/           protocol, architecture, setup and usage notes
-scripts/        build / setup helpers
-packaging/      systemd unit
-```
+| path | |
+| --- | --- |
+| `include/`, `src/` | one header per module: capture, dissector, protocol, queue, pcap, filter, stats |
+| `tests/` | `test_*.c` unit suites and `e2e.sh`, the live one |
+| `docs/` | protocol, architecture, setup |
+| `scripts/` | build and server/client setup helpers |
+| `packaging/` | systemd unit |
 
 ## Limits worth knowing
 
-- Linux only (raw `AF_PACKET` sockets). No capture on macOS/BSD yet.
-- Plaintext stream, no authentication: bind to a private address, tunnel it, or
-  firewall the port.
-- One capture socket, one thread. ~700 MB/s of loopback traffic was fine in
-  testing, but for multi-gigabit links use `-f` to trim in the kernel, and
-  expect kernel drops (reported in the counter line) rather than silently
-  losing data.
-- TCP reassembly, stream following and deep protocol parsing stop at "identify
-  the interesting bit" (SNI, DNS question, HTTP request line).
+Linux only — it is `AF_PACKET` all the way down. The stream is plaintext and unauthenticated, so bind it to a private address, tunnel it or firewall the port. One capture socket and one thread: multiple gigabits need `-f` to trim in the kernel, and kernel drops are reported rather than hidden.
 
 ## Legal
 
-Capture only traffic you own or have permission to monitor. Provided for
-educational and testing purposes; see `LICENSE`.
+Capture only traffic you own or have permission to monitor. Educational and testing use; see [LICENSE](LICENSE).
