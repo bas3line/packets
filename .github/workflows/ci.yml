@@ -35,6 +35,8 @@ jobs:
       - name: end-to-end tests
         run: sudo -E env "PATH=$PATH" bash tests/e2e.sh
         if: matrix.opt == '-O2'
+        # runs in both matrix legs: e2e.sh skips the kernel-filter checks when
+        # the build has no libpcap
 
       - name: version and capabilities
         run: ./bin/pktsniff-server --version

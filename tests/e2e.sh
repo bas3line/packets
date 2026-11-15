@@ -82,6 +82,12 @@ PY
 note "build"
 if make -s -j4 >/dev/null 2>&1; then ok "make"; else bad "make"; fi
 
+HAVE_PCAP=0
+if $BIN/pktsniff-server --version 2>/dev/null | grep -q 'libpcap filtering: yes'; then
+    HAVE_PCAP=1
+fi
+echo "  libpcap: $([ "$HAVE_PCAP" -eq 1 ] && echo yes || echo "no (kernel filters skipped)")"
+
 note "basic streaming"
 start_server "$WORK/srv1.log"
 $BIN/pktsniff-client 127.0.0.1 -p $PORT -d 4 -F 'proto:udp' -w "$WORK/cli1.pcap" \
@@ -107,20 +113,28 @@ expect "server logged the client" "$WORK/srv1.log" \
 stop_server
 
 note "server-side BPF filter and recording"
-start_server "$WORK/srv2.log" -f 'icmp' -w "$WORK/srv2.pcap"
+if [ "$HAVE_PCAP" -eq 1 ]; then
+    start_server "$WORK/srv2.log" -f 'icmp' -w "$WORK/srv2.pcap"
+else
+    start_server "$WORK/srv2.log" -w "$WORK/srv2.pcap"
+fi
 ping -c 3 -i 0.1 127.0.0.1 >/dev/null 2>&1
 sleep 0.3
 stop_server
-expect "filter compiled" "$WORK/srv2.log" \
-    bash -c '! grep -q "bad filter" "$1"' _ "$WORK/srv2.log"
-expect "pcap holds ICMP only" "$WORK/srv2.log" bash -c '
-    out=$(tcpdump -r "$1" -nn 2>/dev/null)
-    grep -q ICMP <<<"$out" && ! grep -q UDP <<<"$out"' _ "$WORK/srv2.pcap"
+if [ "$HAVE_PCAP" -eq 1 ]; then
+    expect "filter compiled" "$WORK/srv2.log" \
+        bash -c '! grep -q "bad filter" "$1"' _ "$WORK/srv2.log"
+    expect "pcap holds ICMP only" "$WORK/srv2.log" bash -c '
+        out=$(tcpdump -r "$1" -nn 2>/dev/null)
+        grep -q ICMP <<<"$out" && ! grep -q UDP <<<"$out"' _ "$WORK/srv2.pcap"
+fi
+expect "server-side pcap holds our pings" "$WORK/srv2.log" \
+    tcpdump -r "$WORK/srv2.pcap" -nn -q -c 1
 expect "SIGTERM shut the server down cleanly" "$WORK/srv2.log" \
     grep -q 'shutting down' "$WORK/srv2.log"
 
 note "slow consumer survives drops"
-start_server "$WORK/srv3.log" -f 'udp' --client-buffer 65536
+start_server "$WORK/srv3.log" --client-buffer 65536
 $BIN/pktsniff-client 127.0.0.1 -p $PORT -d 4 -F 'proto:udp' -X >"$WORK/cli3.out" 2>"$WORK/cli3.err" &
 CLI_PID=$!
 sleep 0.4
@@ -176,9 +190,11 @@ expect "server kept both slots" "$WORK/srv5.log" \
 stop_server
 
 note "argument handling"
-$BIN/pktsniff-server -i lo -p $PORT -f 'bogus filter here' >"$WORK/srv6.log" 2>&1
-expect "bad BPF rejected at startup" "$WORK/srv6.log" \
-    grep -q 'bad filter' "$WORK/srv6.log"
+if [ "$HAVE_PCAP" -eq 1 ]; then
+    $BIN/pktsniff-server -i lo -p $PORT -f 'bogus filter here' >"$WORK/srv6.log" 2>&1
+    expect "bad BPF rejected at startup" "$WORK/srv6.log" \
+        grep -q 'bad filter' "$WORK/srv6.log"
+fi
 $BIN/pktsniff-client --bad-option >/dev/null 2>&1
 expect "client bad option exits 2" "" test $? -eq 2
 $BIN/pktsniff-client -F 'proto:nope' -c 1 127.0.0.1 >/dev/null 2>&1
